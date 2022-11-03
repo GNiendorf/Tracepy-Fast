@@ -9,12 +9,12 @@ class IntersectionKernel
 {
 public:
     ALPAKA_NO_HOST_ACC_WARNING
-    template<typename TAcc, typename TElem, typename TIdx>
+    template<typename TAcc, typename TIdx>
     ALPAKA_FN_ACC auto operator()(
         TAcc const& acc,
         float* X,
         float* Y,
-        TElem* Z,
+        float* Z,
         TIdx const& numElements) const -> void
     {
 
@@ -110,7 +110,7 @@ auto main() -> int
     // - AccCpuThreads
     // - AccCpuFibers
     // - AccCpuSerial
-    using Acc = alpaka::AccCpuThreads<Dim, Idx>;
+    using Acc = alpaka::AccGpuCudaRt<Dim, Idx>;
     std::cout << "Using alpaka accelerator: " << alpaka::getAccName<Acc>() << std::endl;
 
     // Defines the synchronization behavior of a queue

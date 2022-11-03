@@ -31,9 +31,14 @@ endif()
 #-------------------------------------------------------------------------------
 # Add executable.
 
+file(GLOB tracepy_SRC
+     "src/*.h"
+     "src/*.cpp"
+)
+
 alpaka_add_executable(
     ${_TARGET_NAME}
-    src/intersection.cpp)
+    ${tracepy_SRC})
 target_link_libraries(
     ${_TARGET_NAME}
     PUBLIC alpaka::alpaka)
