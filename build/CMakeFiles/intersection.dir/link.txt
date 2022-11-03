@@ -1,1 +1,0 @@
-/usr/bin/c++ CMakeFiles/intersection.dir/src/intersection.cpp.o -o intersection  -Wl,-rpath,/usr/local/lib -pthread /usr/lib/x86_64-linux-gnu/librt.so /usr/local/lib/libboost_atomic.so.1.80.0 
