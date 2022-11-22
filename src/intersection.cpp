@@ -48,7 +48,6 @@ public:
 
             for(TIdx i(threadFirstElemIdx); i < threadLastElemIdxClipped; ++i)
             {
-
                 float rho = alpaka::math::sqrt(acc, X[i]*X[i] + Y[i]*Y[i]);
                 float E = Sc / alpaka::math::sqrt(acc, (1-Skappa*(Sc*Sc)*(rho*rho)));
                 float normal[3] = {-X[i]*E, -Y[i]*E, 1.f};
@@ -58,14 +57,51 @@ public:
                 float mu = rayN / surfaceN;
                 float a = mu*deriv/surf_norm;
                 float b = (mu*mu-1)/surf_norm;
-                if (intertype == 0) {} 
-                // Needed for total internal reflection even if typeof is refraction.
-                else if (b > pow(a, 2) or intertype == 1) {
+                if (intertype == 0)
+                {
+                    // Do nothing for now, the null interaction.
+                }
+                else if (b > a*a or intertype == 1)
+                {
                     D0[i] = D0[i]-2.f*a*normal[0];
                     D1[i] = D1[i]-2.f*a*normal[1];
                     D2[i] = D2[i]-2.f*a*normal[2];
-                } else if (intertype == 2) {
-                    //float* D_new = refraction(D, normal, a, b);
+                }
+                else if (intertype == 2)
+                {
+                    // Should be put into its own seperate function eventually.
+                    float G[2] = {-b/(2.f*a), -b/(2.f*a)};
+
+                    // Initial error.
+                    float error = 1.f;
+
+                    // Initial and xax iterations allowed.
+                    int niter = 0u;
+                    int nmax = 1e5;
+                    while (error > 1.e-15f and niter < nmax)
+                    {
+                        // Newton-raphson method
+                        G[0] = G[1];
+                        G[1] = ((G[1]*G[1])-b)/(2.f*(G[1]+a));
+
+                        // See Spencer, Murty for where this is inspired by.
+                        error = alpaka::math::abs(acc, (G[1]*G[1])+2.f*a*G[1]+b);
+                        niter += 1;
+                    }
+                    // Failed to converge.
+                    if (niter==nmax)
+                    {
+                        //self.P = None
+                    }
+                    // Update direction and index of refraction of the current material.
+                    D0[i] = mu*D0[i]+G[1]*normal[0];
+                    D1[i] = mu*D1[i]+G[1]*normal[1];
+                    D2[i] = mu*D2[i]+G[1]*normal[2];
+                    //self.N = surface.N;
+                }
+                else
+                {
+                    printf("Warning! No interaction or incorrect interaction type specified.");
                 }
             }
         }
@@ -177,6 +213,7 @@ auto main() -> int
     using Dim = alpaka::DimInt<1u>;
     using Idx = std::size_t;
     using Acc = alpaka::AccGpuCudaRt<Dim, Idx>;
+    // Non blocking significantly increases timing, .000037 -> 0.00013 s
     using QueueProperty = alpaka::Blocking;
     using QueueAcc = alpaka::Queue<Acc, QueueProperty>;
     auto const devAcc = alpaka::getDevByIdx<Acc>(0u);
@@ -185,8 +222,8 @@ auto main() -> int
     QueueAcc queue(devAcc);
 
     int nrays = 100000u;
-    Idx const numElements(nrays);
-    alpaka::Vec<Dim, Idx> const extent(numElements);
+    Idx const numRayEle(nrays);
+    alpaka::Vec<Dim, Idx> const extent(numRayEle);
 
 /*
     // Let alpaka calculate good block and grid sizes given our full problem extent
@@ -228,7 +265,7 @@ auto main() -> int
     std::default_random_engine eng{rd()};
     std::uniform_real_distribution<Data> dist(-1, 1);
 
-    for(Idx i(0); i < numElements; ++i)
+    for(Idx i(0); i < numRayEle; ++i)
     {
         pBufHostX[i] = dist(eng);
         pBufHostY[i] = dist(eng);
@@ -257,18 +294,19 @@ auto main() -> int
     alpaka::memcpy(queue, bufAccD1, bufHostD1);
     alpaka::memcpy(queue, bufAccD2, bufHostD2);
 
-    // Instantiate the kernel function object
-    IntersectionKernel kernel;
-
     // Hard-coded surface parameters for now.
     float Skappa = 0.f;
     float Sc = 0.05f;
     float SDiam = 10.f;
+    float RayN = 1.f;
+    float SurfaceN = 1.5f;
+    int intertype = 1u;
 
-    // Create the kernel execution task.
-    auto const taskKernel = alpaka::createTaskKernel<Acc>(
+    // Create the intersection kernel execution task.
+    IntersectionKernel intersect_kernel;
+    auto const intersectionKernelTask = alpaka::createTaskKernel<Acc>(
         workDiv,
-        kernel,
+        intersect_kernel,
         alpaka::getPtrNative(bufAccX),
         alpaka::getPtrNative(bufAccY),
         alpaka::getPtrNative(bufAccZ),
@@ -278,19 +316,38 @@ auto main() -> int
         Skappa,
         Sc,
         SDiam,
-        numElements);
+        numRayEle);
 
-    // Enqueue the kernel execution task
-    {
-        const auto beginT = std::chrono::high_resolution_clock::now();
-        alpaka::enqueue(queue, taskKernel);
+    // Create the interaction kernel execution task.
+    InteractionKernel interact_kernel;
+    auto const interactionKernelTask = alpaka::createTaskKernel<Acc>(
+        workDiv,
+        interact_kernel,
+        alpaka::getPtrNative(bufAccX),
+        alpaka::getPtrNative(bufAccY),
+        alpaka::getPtrNative(bufAccZ),
+        alpaka::getPtrNative(bufAccD0),
+        alpaka::getPtrNative(bufAccD1),
+        alpaka::getPtrNative(bufAccD2),
+        Skappa,
+        Sc,
+        SDiam,
+        RayN,
+        SurfaceN,
+        intertype,
+        numRayEle);
 
-        alpaka::wait(queue); // wait in case we are using an asynchronous queue to time actual kernel runtime
+    const auto beginT = std::chrono::high_resolution_clock::now();
 
-        const auto endT = std::chrono::high_resolution_clock::now();
-        std::cout << "Time for kernel execution: " << std::chrono::duration<double>(endT - beginT).count() << 's'
-                    << std::endl;
-        std::cout << "Number of rays: " << nrays << std::endl;
-    }
+    alpaka::enqueue(queue, intersectionKernelTask);
+    alpaka::wait(queue);
+
+    alpaka::enqueue(queue, interactionKernelTask);
+    alpaka::wait(queue);
+
+    const auto endT = std::chrono::high_resolution_clock::now();
+
+    std::cout << "Time for kernel execution: " << std::chrono::duration<double>(endT - beginT).count() << 's' << std::endl;
+    std::cout << "Number of rays: " << nrays << std::endl;
 
 }
