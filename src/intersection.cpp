@@ -13,7 +13,6 @@ ALPAKA_FN_ACC float conics_func(
     return func;
 }
 
-
 class InteractionKernel
 {
 public:
@@ -42,7 +41,6 @@ public:
 
         if(threadFirstElemIdx < nRays)
         {
-
             TIdx const threadLastElemIdx(threadFirstElemIdx + threadElemExtent);
             TIdx const threadLastElemIdxClipped((nRays > threadLastElemIdx) ? threadLastElemIdx : nRays);
 
@@ -91,13 +89,15 @@ public:
                     // Failed to converge.
                     if (niter==nmax)
                     {
-                        //self.P = None
+                        // Dummy values for now. This implies that the refraction algo did not converge.
+                        X[i] = -9999.f;
+                        Y[i] = -9999.f;
+                        Z[i] = -9999.f;
                     }
                     // Update direction and index of refraction of the current material.
                     D0[i] = mu*D0[i]+G[1]*normal[0];
                     D1[i] = mu*D1[i]+G[1]*normal[1];
                     D2[i] = mu*D2[i]+G[1]*normal[2];
-                    //self.N = surface.N;
                 }
                 else
                 {
@@ -121,6 +121,10 @@ public:
         float* D0,
         float* D1,
         float* D2,
+        float SX,
+        float SY,
+        float SZ,
+        float* R,
         float Skappa,
         float Sc,
         float SDiam,
@@ -139,6 +143,15 @@ public:
 
             for(TIdx i(threadFirstElemIdx); i < threadLastElemIdxClipped; ++i)
             {
+                // Transformed ray coordinates.
+                X[i] = R[0]*(X[i]-SX) + R[1]*(Y[i]-SY) + R[2]*(Z[i]-SZ);
+                Y[i] = R[3]*(X[i]-SX) + R[4]*(Y[i]-SY) + R[5]*(Z[i]-SZ);
+                Z[i] = R[6]*(X[i]-SX) + R[7]*(Y[i]-SY) + R[8]*(Z[i]-SZ);
+
+                // Transformed ray directions.
+                D0[i] = R[0]*D0[i] + R[1]*D1[i] + R[2]*D2[i];
+                D1[i] = R[3]*D0[i] + R[4]*D1[i] + R[5]*D2[i];
+                D2[i] = R[6]*D0[i] + R[7]*D1[i] + R[8]*D2[i];
 
                 // Initial guesses. See Spencer, Murty for explanation
                 float s_0 = -Z[i]/D2[i];
@@ -160,9 +173,6 @@ public:
                     Zi = 0.f + D2[i]*s_j[0];
 
                     float rho = alpaka::math::sqrt(acc, Xi*Xi + Yi*Yi);
-
-                    if (rho > SDiam/2.f)
-                        printf("Not on surface!: rho:%f, Radius:%f\n", rho, SDiam/2.f);
 
                     // Function value and derivative at iterated point.
                     float func = conics_func(acc, Sc, Skappa, rho, Zi);
@@ -189,6 +199,7 @@ public:
                 {
                     // Dummy values for now. This implies that the algo did not converge.
                     // Most likely because the ray did not intersect with the surface.
+                    printf("Failure to find intersection!");
                     X[i] = -9999.f;
                     Y[i] = -9999.f;
                     Z[i] = -9999.f;
@@ -301,6 +312,31 @@ auto main() -> int
     float RayN = 1.f;
     float SurfaceN = 1.5f;
     int intertype = 1u;
+    float alpha = 0.f;
+    float beta = M_PI;
+    float gamma = 0.f;
+    float SX = 0.f;
+    float SY = 0.f;
+    float SZ = 10.f;
+
+    // Calculate on the CPU, only needs to be done once. Such awful code though.
+    Idx const Rele(9);
+    alpaka::Vec<Dim, Idx> const extent2(Rele);
+    BufHost bufHostR(alpaka::allocBuf<Data, Idx>(devHost, extent2));
+    Data* pBufHostR(alpaka::getPtrNative(bufHostR));
+    BufAcc bufAccR(alpaka::allocBuf<Data, Idx>(devAcc, extent2));
+
+    pBufHostR[0] = std::cos(alpha)*std::cos(gamma)+std::sin(alpha)*std::sin(beta)*std::sin(gamma);
+    pBufHostR[1] = -std::cos(beta)*std::sin(gamma);
+    pBufHostR[2] = -std::sin(alpha)*std::cos(gamma)+std::cos(alpha)*std::sin(beta)*std::sin(gamma);
+    pBufHostR[3] = std::cos(alpha)*std::sin(gamma)-std::sin(alpha)*std::sin(beta)*std::cos(gamma);
+    pBufHostR[4] = std::cos(beta)*std::cos(gamma);
+    pBufHostR[5] = -std::sin(alpha)*std::sin(gamma)-std::cos(alpha)*std::sin(beta)*std::cos(gamma);
+    pBufHostR[6] = std::sin(alpha)*std::cos(beta);
+    pBufHostR[7] = std::sin(beta);
+    pBufHostR[8] = std::cos(alpha)*std::cos(beta);
+
+    alpaka::memcpy(queue, bufAccR, bufHostR);
 
     // Create the intersection kernel execution task.
     IntersectionKernel intersect_kernel;
@@ -313,6 +349,10 @@ auto main() -> int
         alpaka::getPtrNative(bufAccD0),
         alpaka::getPtrNative(bufAccD1),
         alpaka::getPtrNative(bufAccD2),
+        SX,
+        SY,
+        SZ,
+        alpaka::getPtrNative(bufAccR),
         Skappa,
         Sc,
         SDiam,
@@ -336,6 +376,12 @@ auto main() -> int
         SurfaceN,
         intertype,
         numRayEle);
+
+    // Change eventually
+    if (intertype == 2) {
+        RayN = SurfaceN;
+    }
+    
 
     const auto beginT = std::chrono::high_resolution_clock::now();
 
