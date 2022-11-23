@@ -1,7 +1,7 @@
 #include "intersection.h"
 
 template<typename TAcc>
-ALPAKA_FN_ACC float conics_func(
+ALPAKA_FN_ACC ALPAKA_FN_INLINE float conics_func(
     TAcc const& acc,
     float Sc,
     float Skappa,
@@ -13,7 +13,131 @@ ALPAKA_FN_ACC float conics_func(
     return func;
 }
 
-class InteractionKernel
+ALPAKA_FN_ACC ALPAKA_FN_INLINE void transform(
+    float* R,
+    float* X,
+    float* Y,
+    float* Z,
+    float* D0,
+    float* D1,
+    float* D2,
+    const float SX,
+    const float SY,
+    const float SZ,
+    int rayidx)
+{
+    // Transformed ray coordinates.
+    X[rayidx] = R[0]*(X[rayidx]-SX) + R[1]*(Y[rayidx]-SY) + R[2]*(Z[rayidx]-SZ);
+    Y[rayidx] = R[3]*(X[rayidx]-SX) + R[4]*(Y[rayidx]-SY) + R[5]*(Z[rayidx]-SZ);
+    Z[rayidx] = R[6]*(X[rayidx]-SX) + R[7]*(Y[rayidx]-SY) + R[8]*(Z[rayidx]-SZ);
+
+    // Transformed ray directions.
+    D0[rayidx] = R[0]*D0[rayidx] + R[1]*D1[rayidx] + R[2]*D2[rayidx];
+    D1[rayidx] = R[3]*D0[rayidx] + R[4]*D1[rayidx] + R[5]*D2[rayidx];
+    D2[rayidx] = R[6]*D0[rayidx] + R[7]*D1[rayidx] + R[8]*D2[rayidx];
+}
+
+ALPAKA_FN_ACC ALPAKA_FN_INLINE void lab_frame(
+    float* R,
+    float* X,
+    float* Y,
+    float* Z,
+    float* D0,
+    float* D1,
+    float* D2,
+    const float SX,
+    const float SY,
+    const float SZ,
+    int rayidx)
+{
+    // Transform coordinates back to lab frame.
+    X[rayidx] = (R[0]*X[rayidx] + R[3]*Y[rayidx] + R[6]*Z[rayidx]) + SX;
+    Y[rayidx] = (R[1]*X[rayidx] + R[4]*Y[rayidx] + R[7]*Z[rayidx]) + SY;
+    Z[rayidx] = (R[2]*X[rayidx] + R[5]*Y[rayidx] + R[8]*Z[rayidx]) + SZ;
+
+    // Transform directions back to lab frame.
+    D0[rayidx] = R[0]*D0[rayidx] + R[3]*D1[rayidx] + R[6]*D2[rayidx];
+    D1[rayidx] = R[1]*D0[rayidx] + R[4]*D1[rayidx] + R[7]*D2[rayidx];
+    D2[rayidx] = R[2]*D0[rayidx] + R[5]*D1[rayidx] + R[8]*D2[rayidx];
+}
+
+template<typename TAcc>
+ALPAKA_FN_ACC ALPAKA_FN_INLINE void find_intersection(
+    TAcc const& acc,
+    float* X,
+    float* Y,
+    float* Z,
+    float* D0,
+    float* D1,
+    float* D2,
+    float Skappa,
+    float Sc,
+    float SDiam,
+    float& rho,
+    float& func,
+    float& E,
+    float& deriv,
+    float normal[3],
+    int rayidx)
+{
+    // Initial guesses. See Spencer, Murty for explanation.
+    float s_0 = -Z[rayidx]/D2[rayidx];
+    float X_1 = X[rayidx]+D1[rayidx]*s_0;
+    float Y_1 = Y[rayidx]+D2[rayidx]*s_0;
+    float s_j[2] = {0.f, 0.f};
+
+    //Initial error and iterator.
+    float error = 1.f;
+    int n_iter = 0u;
+
+    //Max iterations allowed.
+    int n_max = 1e4;
+    float Xi, Yi, Zi;
+    while (error > 1e-6 and n_iter < n_max)
+    {
+        // Iterated coordinates.
+        Xi = X_1 + D0[rayidx] * s_j[0];
+        Yi = Y_1 + D1[rayidx] * s_j[0];
+        Zi = 0.f + D2[rayidx] * s_j[0];
+
+        rho = alpaka::math::sqrt(acc, Xi*Xi + Yi*Yi);
+
+        // Function value and derivative at iterated point.
+        func = conics_func(acc, Sc, Skappa, rho, Zi);
+
+        // See Spencer, Murty section on rotational surfaces for definition of E.
+        E = Sc / alpaka::math::sqrt(acc, (1 - Skappa * (Sc*Sc) * (rho*rho)));
+        normal[0] = -Xi * E;
+        normal[1] = -Yi * E;
+        normal[2] = 1.f;
+
+        deriv = normal[0]*D0[rayidx] + normal[1]*D1[rayidx] + normal[2]*D2[rayidx];
+
+        // Newton-raphson method
+        s_j[0] = s_j[1];
+        s_j[1] = s_j[1] - func/deriv;
+
+        // Error is how far f(X, Y, Z) is from 0.
+        error = alpaka::math::abs(acc, func);
+
+        n_iter += 1;
+    }
+
+    // Check prevents rays from propagating backwards.
+    float bcheck = (Xi-X[rayidx])*D0[rayidx] + (Yi-Y[rayidx])*D1[rayidx] + (Zi-Z[rayidx])*D2[rayidx];
+    if (n_iter == n_max || s_0+s_j[0] < 0.f || bcheck < 0.f)
+    {
+        // Dummy values for now. This implies that the algo did not converge.
+        X[rayidx] = -9999.f;
+    } else {
+        // Algorithm converged. Update position of rays.
+        X[rayidx] = Xi;
+        Y[rayidx] = Yi;
+        Z[rayidx] = Zi;
+    }
+}
+
+class traceKernel
 {
 public:
     ALPAKA_NO_HOST_ACC_WARNING
@@ -26,11 +150,15 @@ public:
         float* D0,
         float* D1,
         float* D2,
+        float SX,
+        float SY,
+        float SZ,
+        float* R,
         float Skappa,
         float Sc,
         float SDiam,
-        float rayN,
         float surfaceN,
+        float rayN,
         int intertype,
         TIdx const& nRays) const -> void
     {
@@ -41,23 +169,35 @@ public:
 
         if(threadFirstElemIdx < nRays)
         {
+
             TIdx const threadLastElemIdx(threadFirstElemIdx + threadElemExtent);
             TIdx const threadLastElemIdxClipped((nRays > threadLastElemIdx) ? threadLastElemIdx : nRays);
 
             for(TIdx i(threadFirstElemIdx); i < threadLastElemIdxClipped; ++i)
             {
-                float rho = alpaka::math::sqrt(acc, X[i]*X[i] + Y[i]*Y[i]);
-                float E = Sc / alpaka::math::sqrt(acc, (1-Skappa*(Sc*Sc)*(rho*rho)));
-                float normal[3] = {-X[i]*E, -Y[i]*E, 1.f};
-                float deriv = normal[0]*D0[i] + normal[1]*D1[i] + normal[2]*D2[i];
-                float surf_norm = normal[0]*normal[0]+normal[1]*normal[1]+normal[2]*normal[2];
+                // Don't waste time tracing rays that failed previously.
+                if (X[i] == -9999.f)
+                    continue;
 
+                // Transform coordinate system to surface coordinate system.
+                transform(R, X, Y, Z, D0, D1, D2, SX, SY, SZ, i);
+
+                // Find intersection coordinates between ray and surface.
+                float rho, func, E, deriv; float normal[3];
+                find_intersection(acc, X, Y, Z, D0, D1, D2, Skappa, Sc, SDiam, rho, func, E, deriv, normal, i);
+
+                if (X[i] == -9999.f)
+                    printf("Failure to find intersection!");
+                    continue;
+
+                // Interaction kernel code
+                float surf_norm = normal[0]*normal[0]+normal[1]*normal[1]+normal[2]*normal[2];
                 float mu = rayN / surfaceN;
                 float a = mu*deriv/surf_norm;
                 float b = (mu*mu-1)/surf_norm;
                 if (intertype == 0)
                 {
-                    // Do nothing for now, the null interaction.
+                     // Do nothing for now, the null interaction.
                 }
                 else if (b > a*a or intertype == 1)
                 {
@@ -93,6 +233,7 @@ public:
                         X[i] = -9999.f;
                         Y[i] = -9999.f;
                         Z[i] = -9999.f;
+                        continue;
                     }
                     // Update direction and index of refraction of the current material.
                     D0[i] = mu*D0[i]+G[1]*normal[0];
@@ -103,112 +244,9 @@ public:
                 {
                     printf("Warning! No interaction or incorrect interaction type specified.");
                 }
-            }
-        }
-    }
-};
 
-class IntersectionKernel
-{
-public:
-    ALPAKA_NO_HOST_ACC_WARNING
-    template<typename TAcc, typename TIdx>
-    ALPAKA_FN_ACC auto operator()(
-        TAcc const& acc,
-        float* X,
-        float* Y,
-        float* Z,
-        float* D0,
-        float* D1,
-        float* D2,
-        float SX,
-        float SY,
-        float SZ,
-        float* R,
-        float Skappa,
-        float Sc,
-        float SDiam,
-        TIdx const& nRays) const -> void
-    {
-
-        TIdx const gridThreadIdx(alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0u]);
-        TIdx const threadElemExtent(alpaka::getWorkDiv<alpaka::Thread, alpaka::Elems>(acc)[0u]);
-        TIdx const threadFirstElemIdx(gridThreadIdx * threadElemExtent);
-
-        if(threadFirstElemIdx < nRays)
-        {
-
-            TIdx const threadLastElemIdx(threadFirstElemIdx + threadElemExtent);
-            TIdx const threadLastElemIdxClipped((nRays > threadLastElemIdx) ? threadLastElemIdx : nRays);
-
-            for(TIdx i(threadFirstElemIdx); i < threadLastElemIdxClipped; ++i)
-            {
-                // Transformed ray coordinates.
-                X[i] = R[0]*(X[i]-SX) + R[1]*(Y[i]-SY) + R[2]*(Z[i]-SZ);
-                Y[i] = R[3]*(X[i]-SX) + R[4]*(Y[i]-SY) + R[5]*(Z[i]-SZ);
-                Z[i] = R[6]*(X[i]-SX) + R[7]*(Y[i]-SY) + R[8]*(Z[i]-SZ);
-
-                // Transformed ray directions.
-                D0[i] = R[0]*D0[i] + R[1]*D1[i] + R[2]*D2[i];
-                D1[i] = R[3]*D0[i] + R[4]*D1[i] + R[5]*D2[i];
-                D2[i] = R[6]*D0[i] + R[7]*D1[i] + R[8]*D2[i];
-
-                // Initial guesses. See Spencer, Murty for explanation
-                float s_0 = -Z[i]/D2[i];
-                float X_1 = X[i]+D1[i]*s_0;
-                float Y_1 = Y[i]+D2[i]*s_0;
-                float s_j[2] = {0.f, 0.f};
-
-                //Initial error.
-                float error = 1.f;
-                int n_iter = 0u;
-                //Max iterations allowed.
-                int n_max = 1e4;
-                float Xi, Yi, Zi;
-                while (error > 1e-6 and n_iter < n_max)
-                {
-                    // Iterated coordinates.
-                    Xi = X_1 + D0[i]*s_j[0];
-                    Yi = Y_1 + D1[i]*s_j[0];
-                    Zi = 0.f + D2[i]*s_j[0];
-
-                    float rho = alpaka::math::sqrt(acc, Xi*Xi + Yi*Yi);
-
-                    // Function value and derivative at iterated point.
-                    float func = conics_func(acc, Sc, Skappa, rho, Zi);
-
-                    // See Spencer, Murty section on rotational surfaces for definition of E.
-                    float E = Sc / alpaka::math::sqrt(acc, (1-Skappa*(Sc*Sc)*(rho*rho)));
-                    float normal[3] = {-Xi*E, -Yi*E, 1.f};
-
-                    float deriv = normal[0]*D0[i] + normal[1]*D1[i] + normal[2]*D2[i];
-
-                    // Newton-raphson method
-                    s_j[0] = s_j[1];
-                    s_j[1] = s_j[1]-func/deriv;
-
-                    // Error is how far f(X, Y, Z) is from 0.
-                    error = alpaka::math::abs(acc, func);
-
-                    n_iter += 1;
-                }
-
-                // Check prevents rays from propagating backwards.
-                float bcheck = (Xi-X[i])*D0[i] + (Yi-Y[i])*D1[i] + (Zi-Z[i])*D2[i];
-                if (n_iter == n_max || s_0+s_j[0] < 0.f || bcheck < 0.f)
-                {
-                    // Dummy values for now. This implies that the algo did not converge.
-                    // Most likely because the ray did not intersect with the surface.
-                    printf("Failure to find intersection!");
-                    X[i] = -9999.f;
-                    Y[i] = -9999.f;
-                    Z[i] = -9999.f;
-                } else {
-                    // Algorithm converged. Update position of rays.
-                    X[i] = Xi;
-                    Y[i] = Yi;
-                    Z[i] = Zi;
-                }
+                // Transform coordinate system back to the lab frame.
+                lab_frame(R, X, Y, Z, D0, D1, D2, SX, SY, SZ, i);
             }
         }
     }
@@ -338,11 +376,11 @@ auto main() -> int
 
     alpaka::memcpy(queue, bufAccR, bufHostR);
 
-    // Create the intersection kernel execution task.
-    IntersectionKernel intersect_kernel;
-    auto const intersectionKernelTask = alpaka::createTaskKernel<Acc>(
+    // Create the trace kernel execution task.
+    traceKernel trace_kernel;
+    auto const traceKernelTask = alpaka::createTaskKernel<Acc>(
         workDiv,
-        intersect_kernel,
+        trace_kernel,
         alpaka::getPtrNative(bufAccX),
         alpaka::getPtrNative(bufAccY),
         alpaka::getPtrNative(bufAccZ),
@@ -356,24 +394,8 @@ auto main() -> int
         Skappa,
         Sc,
         SDiam,
-        numRayEle);
-
-    // Create the interaction kernel execution task.
-    InteractionKernel interact_kernel;
-    auto const interactionKernelTask = alpaka::createTaskKernel<Acc>(
-        workDiv,
-        interact_kernel,
-        alpaka::getPtrNative(bufAccX),
-        alpaka::getPtrNative(bufAccY),
-        alpaka::getPtrNative(bufAccZ),
-        alpaka::getPtrNative(bufAccD0),
-        alpaka::getPtrNative(bufAccD1),
-        alpaka::getPtrNative(bufAccD2),
-        Skappa,
-        Sc,
-        SDiam,
-        RayN,
         SurfaceN,
+        RayN,
         intertype,
         numRayEle);
 
@@ -385,10 +407,7 @@ auto main() -> int
 
     const auto beginT = std::chrono::high_resolution_clock::now();
 
-    alpaka::enqueue(queue, intersectionKernelTask);
-    alpaka::wait(queue);
-
-    alpaka::enqueue(queue, interactionKernelTask);
+    alpaka::enqueue(queue, traceKernelTask);
     alpaka::wait(queue);
 
     const auto endT = std::chrono::high_resolution_clock::now();
