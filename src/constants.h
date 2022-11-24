@@ -1,10 +1,7 @@
-#include <alpaka/alpaka.hpp>
+#ifndef CONSTANTS_H
+#define CONSTANTS_H
 
-#include <chrono>
-#include <iostream>
-#include <random>
-#include <typeinfo>
-#include <cmath>
+#include <alpaka/alpaka.hpp>
 
 using Data = std::float_t;
 using Dim = alpaka::DimInt<1u>;
@@ -23,13 +20,12 @@ using Acc = alpaka::AccCpuSerial<Dim, Idx>;
 // Non blocking significantly increases timing, .000037 -> 0.00013 s
 using QueueProperty = alpaka::Blocking;
 using QueueAcc = alpaka::Queue<Acc, QueueProperty>;
-auto const devAcc = alpaka::getDevByIdx<Acc>(0u);
-Idx const elementsPerThread = 1u;
 
 // Get the host device for allocating memory on the host.
 using DevHost = alpaka::DevCpu;
 using BufHost = alpaka::Buf<DevHost, Data, Dim, Idx>;
-auto const devHost = alpaka::getDevByIdx<DevHost>(0u);
 
 // Define the accelerator buffer.
 using BufAcc = alpaka::Buf<Acc, Data, Dim, Idx>;
+
+#endif
