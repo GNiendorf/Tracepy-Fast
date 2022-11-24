@@ -8,7 +8,7 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 ################################################################################
 # Project.
 
-set(_TARGET_NAME intersection)
+set(_TARGET_NAME trace)
 
 project(${_TARGET_NAME} LANGUAGES CXX)
 

@@ -5,7 +5,7 @@ class traceKernel
 public:
     ALPAKA_NO_HOST_ACC_WARNING
     template<typename TAcc, typename TIdx>
-    ALPAKA_FN_ACC auto operator()(
+    ALPAKA_FN_ACC void operator()(
         TAcc const& acc,
         float* X,
         float* Y,
@@ -23,7 +23,7 @@ public:
         float surfaceN,
         float rayN,
         int intertype,
-        TIdx const& nRays) const -> void
+        TIdx const& nRays) const
     {
 
         TIdx const gridThreadIdx(alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0u]);
@@ -40,8 +40,10 @@ public:
             {
                 // Don't waste time tracing rays that failed previously.
                 if (X[i] == -9999.f)
+                {
                     //printf("Ignoring previous ray that failed!");
                     continue;
+                }
 
                 // Transform coordinate system to surface coordinate system.
                 transform(R, X, Y, Z, D0, D1, D2, SX, SY, SZ, i);
@@ -51,15 +53,19 @@ public:
                 findIntersection(acc, X, Y, Z, D0, D1, D2, Skappa, Sc, SDiam, rho, func, E, deriv, normal, i);
 
                 if (X[i] == -9999.f)
+                {
                     //printf("Failure to find intersection!");
                     continue;
+                }
 
                 // Find new ray directions from interaction with surface
                 interact(acc, X, D0, D1, D2, rayN, surfaceN, intertype, deriv, normal, i);
 
                 if (X[i] == -9999.f)
+                {
                     //printf("Failure with interaction!");
                     continue;
+                }
 
                 // Transform coordinate system back to the lab frame.
                 labFrame(R, X, Y, Z, D0, D1, D2, SX, SY, SZ, i);
