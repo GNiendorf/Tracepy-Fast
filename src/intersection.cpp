@@ -81,9 +81,9 @@ ALPAKA_FN_ACC ALPAKA_FN_INLINE void find_intersection(
     int rayidx)
 {
     // Initial guesses. See Spencer, Murty for explanation.
-    float s_0 = -Z[rayidx]/D2[rayidx];
-    float X_1 = X[rayidx]+D1[rayidx]*s_0;
-    float Y_1 = Y[rayidx]+D2[rayidx]*s_0;
+    float s_0 = -Z[rayidx] / D2[rayidx];
+    float X_1 = X[rayidx] + D1[rayidx] * s_0;
+    float Y_1 = Y[rayidx] + D2[rayidx] * s_0;
     float s_j[2] = {0.f, 0.f};
 
     //Initial error and iterator.
@@ -115,7 +115,7 @@ ALPAKA_FN_ACC ALPAKA_FN_INLINE void find_intersection(
 
         // Newton-raphson method
         s_j[0] = s_j[1];
-        s_j[1] = s_j[1] - func/deriv;
+        s_j[1] = s_j[1] - func / deriv;
 
         // Error is how far f(X, Y, Z) is from 0.
         error = alpaka::math::abs(acc, func);
@@ -124,8 +124,8 @@ ALPAKA_FN_ACC ALPAKA_FN_INLINE void find_intersection(
     }
 
     // Check prevents rays from propagating backwards.
-    float bcheck = (Xi-X[rayidx])*D0[rayidx] + (Yi-Y[rayidx])*D1[rayidx] + (Zi-Z[rayidx])*D2[rayidx];
-    if (n_iter == n_max || s_0+s_j[0] < 0.f || bcheck < 0.f)
+    float bcheck = (Xi - X[rayidx]) * D0[rayidx] + (Yi - Y[rayidx]) * D1[rayidx] + (Zi - Z[rayidx]) * D2[rayidx];
+    if (n_iter == n_max || s_0 + s_j[0] < 0.f || bcheck < 0.f)
     {
         // Dummy values for now. This implies that the algo did not converge.
         X[rayidx] = -9999.f;
@@ -135,6 +135,81 @@ ALPAKA_FN_ACC ALPAKA_FN_INLINE void find_intersection(
         Y[rayidx] = Yi;
         Z[rayidx] = Zi;
     }
+}
+
+template<typename TAcc>
+ALPAKA_FN_ACC ALPAKA_FN_INLINE void interaction(
+    TAcc const& acc,
+    float* X,
+    float* Y,
+    float* Z,
+    float* D0,
+    float* D1,
+    float* D2,
+    float Skappa,
+    float Sc,
+    float SDiam,
+    float rayN,
+    float surfaceN,
+    int intertype,
+    float& rho,
+    float& func,
+    float& E,
+    float& deriv,
+    float normal[3],
+    int rayidx)
+{
+                // Interaction kernel code
+                float surf_norm = normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2];
+                float mu = rayN / surfaceN;
+                float a = mu * deriv / surf_norm;
+                float b = (mu * mu - 1) / surf_norm;
+                if (intertype == 0)
+                {
+                     // Do nothing for now, the null interaction.
+                }
+                else if (b > a * a or intertype == 1)
+                {
+                    D0[rayidx] = D0[rayidx] - 2.f * a * normal[0];
+                    D1[rayidx] = D1[rayidx] - 2.f * a * normal[1];
+                    D2[rayidx] = D2[rayidx] - 2.f * a * normal[2];
+                }
+                else if (intertype == 2)
+                {
+                    // Should be put into its own seperate function eventually.
+                    float G[2] = {-b / (2.f * a), -b / (2.f * a)};
+
+                    // Initial error.
+                    float error = 1.f;
+
+                    // Initial and xax iterations allowed.
+                    int niter = 0u;
+                    int nmax = 1e5;
+                    while (error > 1.e-15f and niter < nmax)
+                    {
+                        // Newton-raphson method
+                        G[0] = G[1];
+                        G[1] = ((G[1] * G[1]) - b) / (2.f * (G[1] + a));
+
+                        // See Spencer, Murty for where this is inspired by.
+                        error = alpaka::math::abs(acc, (G[1] * G[1]) + 2.f * a * G[1] + b);
+                        niter += 1;
+                    }
+                    // Failed to converge.
+                    if (niter == nmax)
+                    {
+                        // Dummy values for now. This implies that the refraction algo did not converge.
+                        X[rayidx] = -9999.f;
+                    }
+                    // Update direction and index of refraction of the current material.
+                    D0[rayidx] = mu * D0[rayidx] + G[1] * normal[0];
+                    D1[rayidx] = mu * D1[rayidx] + G[1] * normal[1];
+                    D2[rayidx] = mu * D2[rayidx] + G[1] * normal[2];
+                }
+                else
+                {
+                    printf("Warning! No interaction or incorrect interaction type specified.");
+                }
 }
 
 class traceKernel
@@ -177,6 +252,7 @@ public:
             {
                 // Don't waste time tracing rays that failed previously.
                 if (X[i] == -9999.f)
+                    //printf("Ignoring previous ray that failed!");
                     continue;
 
                 // Transform coordinate system to surface coordinate system.
@@ -187,63 +263,15 @@ public:
                 find_intersection(acc, X, Y, Z, D0, D1, D2, Skappa, Sc, SDiam, rho, func, E, deriv, normal, i);
 
                 if (X[i] == -9999.f)
-                    printf("Failure to find intersection!");
+                    //printf("Failure to find intersection!");
                     continue;
 
-                // Interaction kernel code
-                float surf_norm = normal[0]*normal[0]+normal[1]*normal[1]+normal[2]*normal[2];
-                float mu = rayN / surfaceN;
-                float a = mu*deriv/surf_norm;
-                float b = (mu*mu-1)/surf_norm;
-                if (intertype == 0)
-                {
-                     // Do nothing for now, the null interaction.
-                }
-                else if (b > a*a or intertype == 1)
-                {
-                    D0[i] = D0[i]-2.f*a*normal[0];
-                    D1[i] = D1[i]-2.f*a*normal[1];
-                    D2[i] = D2[i]-2.f*a*normal[2];
-                }
-                else if (intertype == 2)
-                {
-                    // Should be put into its own seperate function eventually.
-                    float G[2] = {-b/(2.f*a), -b/(2.f*a)};
+                // Find new ray directions from interaction with surface
+                interaction(acc, X, Y, Z, D0, D1, D2, Skappa, Sc, SDiam, rayN, surfaceN, intertype, rho, func, E, deriv, normal, i);
 
-                    // Initial error.
-                    float error = 1.f;
-
-                    // Initial and xax iterations allowed.
-                    int niter = 0u;
-                    int nmax = 1e5;
-                    while (error > 1.e-15f and niter < nmax)
-                    {
-                        // Newton-raphson method
-                        G[0] = G[1];
-                        G[1] = ((G[1]*G[1])-b)/(2.f*(G[1]+a));
-
-                        // See Spencer, Murty for where this is inspired by.
-                        error = alpaka::math::abs(acc, (G[1]*G[1])+2.f*a*G[1]+b);
-                        niter += 1;
-                    }
-                    // Failed to converge.
-                    if (niter==nmax)
-                    {
-                        // Dummy values for now. This implies that the refraction algo did not converge.
-                        X[i] = -9999.f;
-                        Y[i] = -9999.f;
-                        Z[i] = -9999.f;
-                        continue;
-                    }
-                    // Update direction and index of refraction of the current material.
-                    D0[i] = mu*D0[i]+G[1]*normal[0];
-                    D1[i] = mu*D1[i]+G[1]*normal[1];
-                    D2[i] = mu*D2[i]+G[1]*normal[2];
-                }
-                else
-                {
-                    printf("Warning! No interaction or incorrect interaction type specified.");
-                }
+                if (X[i] == -9999.f)
+                    //printf("Failure with interaction!");
+                    continue;
 
                 // Transform coordinate system back to the lab frame.
                 lab_frame(R, X, Y, Z, D0, D1, D2, SX, SY, SZ, i);
@@ -254,27 +282,20 @@ public:
 
 auto main() -> int
 {
-    // - AccGpuCudaRt
-    // - AccCpuThreads
-    // - AccCpuFibers
-    // - AccCpuSerial
-    using Data = std::float_t;
-    using Dim = alpaka::DimInt<1u>;
-    using Idx = std::size_t;
-    using Acc = alpaka::AccGpuCudaRt<Dim, Idx>;
-    // Non blocking significantly increases timing, .000037 -> 0.00013 s
-    using QueueProperty = alpaka::Blocking;
-    using QueueAcc = alpaka::Queue<Acc, QueueProperty>;
-    auto const devAcc = alpaka::getDevByIdx<Acc>(0u);
-    Idx const elementsPerThread(1u);
-
+    // Define our queue.
     QueueAcc queue(devAcc);
 
     int nrays = 100000u;
     Idx const numRayEle(nrays);
     alpaka::Vec<Dim, Idx> const extent(numRayEle);
 
-/*
+
+
+#ifdef ALPAKA_ACC_GPU_CUDA_ENABLED
+    Idx const blocksPerGrid = 5;
+    Idx const threadsPerBlock = 512;
+    auto workDiv = alpaka::WorkDivMembers<Dim, Idx>{blocksPerGrid, threadsPerBlock, elementsPerThread};
+#else
     // Let alpaka calculate good block and grid sizes given our full problem extent
     alpaka::WorkDivMembers<Dim, Idx> const workDiv(alpaka::getValidWorkDiv<Acc>(
         devAcc,
@@ -282,11 +303,7 @@ auto main() -> int
         elementsPerThread,
         false,
         alpaka::GridBlockExtentSubDivRestrictions::Unrestricted));
-*/
-
-    Idx const blocksPerGrid = 5;
-    Idx const threadsPerBlock = 512;
-    auto workDiv = alpaka::WorkDivMembers<Dim, Idx>{blocksPerGrid, threadsPerBlock, elementsPerThread};
+#endif
 
     // Get the host device for allocating memory on the host.
     using DevHost = alpaka::DevCpu;
@@ -403,12 +420,10 @@ auto main() -> int
     if (intertype == 2) {
         RayN = SurfaceN;
     }
-    
 
     const auto beginT = std::chrono::high_resolution_clock::now();
 
     alpaka::enqueue(queue, traceKernelTask);
-    alpaka::wait(queue);
 
     const auto endT = std::chrono::high_resolution_clock::now();
 
