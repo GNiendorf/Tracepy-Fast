@@ -32,8 +32,7 @@ endif()
 # Add executable.
 
 file(GLOB tracepy_SRC
-     "src/*.h"
-     "src/*.cpp"
+     "src/trace.cpp"
 )
 
 alpaka_add_executable(
