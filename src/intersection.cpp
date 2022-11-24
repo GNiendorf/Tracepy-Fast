@@ -137,80 +137,104 @@ ALPAKA_FN_ACC ALPAKA_FN_INLINE void find_intersection(
     }
 }
 
+ALPAKA_FN_ACC ALPAKA_FN_INLINE void reflection(
+    float* D0,
+    float* D1,
+    float* D2,
+    float normal[3],
+    const float a,
+    int rayidx)
+{
+    D0[rayidx] = D0[rayidx] - 2.f * a * normal[0];
+    D1[rayidx] = D1[rayidx] - 2.f * a * normal[1];
+    D2[rayidx] = D2[rayidx] - 2.f * a * normal[2];
+}
+
+template<typename TAcc>
+ALPAKA_FN_ACC ALPAKA_FN_INLINE void refraction(
+    TAcc const& acc,
+    float* D0,
+    float* D1,
+    float* D2,
+    float* X,
+    float normal[3],
+    const float a,
+    const float b,
+    const float mu,
+    int rayidx)
+{
+    // Should be put into its own seperate function eventually.
+    float G[2] = {-b / (2.f * a), -b / (2.f * a)};
+
+    // Initial error.
+    float error = 1.f;
+
+    // Initial and xax iterations allowed.
+    int niter = 0u;
+    int nmax = 1e5;
+    while (error > 1.e-15f and niter < nmax)
+    {
+        // Newton-raphson method
+        G[0] = G[1];
+        G[1] = ((G[1] * G[1]) - b) / (2.f * (G[1] + a));
+
+        // See Spencer, Murty for where this is inspired by.
+        error = alpaka::math::abs(acc, (G[1] * G[1]) + 2.f * a * G[1] + b);
+        niter += 1;
+    }
+
+    // Failed to converge.
+    if (niter == nmax)
+    {
+        // Dummy values for now. This implies that the refraction algo did not converge.
+        X[rayidx] = -9999.f;
+    }
+
+    // Update direction and index of refraction of the current material.
+    D0[rayidx] = mu * D0[rayidx] + G[1] * normal[0];
+    D1[rayidx] = mu * D1[rayidx] + G[1] * normal[1];
+    D2[rayidx] = mu * D2[rayidx] + G[1] * normal[2];
+}
+
 template<typename TAcc>
 ALPAKA_FN_ACC ALPAKA_FN_INLINE void interaction(
     TAcc const& acc,
     float* X,
-    float* Y,
-    float* Z,
     float* D0,
     float* D1,
     float* D2,
-    float Skappa,
-    float Sc,
-    float SDiam,
     float rayN,
     float surfaceN,
     int intertype,
-    float& rho,
-    float& func,
-    float& E,
     float& deriv,
     float normal[3],
     int rayidx)
 {
-    // Interaction kernel code
     float surf_norm = normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2];
     float mu = rayN / surfaceN;
     float a = mu * deriv / surf_norm;
     float b = (mu * mu - 1) / surf_norm;
+
     if (intertype == 0)
     {
-            // Do nothing for now, the null interaction.
+        // Do nothing for now, the null interaction.
     }
+    // The first condition is needed for total internal reflection.
     else if (b > a * a or intertype == 1)
     {
-        D0[rayidx] = D0[rayidx] - 2.f * a * normal[0];
-        D1[rayidx] = D1[rayidx] - 2.f * a * normal[1];
-        D2[rayidx] = D2[rayidx] - 2.f * a * normal[2];
+        reflection(D0, D1, D2, normal, a, rayidx);
     }
     else if (intertype == 2)
     {
-        // Should be put into its own seperate function eventually.
-        float G[2] = {-b / (2.f * a), -b / (2.f * a)};
-
-        // Initial error.
-        float error = 1.f;
-
-        // Initial and xax iterations allowed.
-        int niter = 0u;
-        int nmax = 1e5;
-        while (error > 1.e-15f and niter < nmax)
-        {
-            // Newton-raphson method
-            G[0] = G[1];
-            G[1] = ((G[1] * G[1]) - b) / (2.f * (G[1] + a));
-
-            // See Spencer, Murty for where this is inspired by.
-            error = alpaka::math::abs(acc, (G[1] * G[1]) + 2.f * a * G[1] + b);
-            niter += 1;
-        }
-        // Failed to converge.
-        if (niter == nmax)
-        {
-            // Dummy values for now. This implies that the refraction algo did not converge.
-            X[rayidx] = -9999.f;
-        }
-        // Update direction and index of refraction of the current material.
-        D0[rayidx] = mu * D0[rayidx] + G[1] * normal[0];
-        D1[rayidx] = mu * D1[rayidx] + G[1] * normal[1];
-        D2[rayidx] = mu * D2[rayidx] + G[1] * normal[2];
+        refraction(acc, D0, D1, D2, X, normal, a, b, mu, rayidx);
     }
     else
     {
         printf("Warning! No interaction or incorrect interaction type specified.");
     }
 }
+
+
 
 class traceKernel
 {
@@ -267,7 +291,7 @@ public:
                     continue;
 
                 // Find new ray directions from interaction with surface
-                interaction(acc, X, Y, Z, D0, D1, D2, Skappa, Sc, SDiam, rayN, surfaceN, intertype, rho, func, E, deriv, normal, i);
+                interaction(acc, X, D0, D1, D2, rayN, surfaceN, intertype, deriv, normal, i);
 
                 if (X[i] == -9999.f)
                     //printf("Failure with interaction!");
@@ -280,14 +304,11 @@ public:
     }
 };
 
-auto main() -> int
+int main()
 {
-    // Define our queue.
-    QueueAcc queue(devAcc);
 
     int nrays = 100000u;
-    Idx const numRayEle(nrays);
-    alpaka::Vec<Dim, Idx> const extent(numRayEle);
+    alpaka::Vec<Dim, Idx> const extent(nrays);
 
 #ifdef ALPAKA_ACC_GPU_CUDA_ENABLED
     Idx const blocksPerGrid = 5;
@@ -303,11 +324,6 @@ auto main() -> int
         alpaka::GridBlockExtentSubDivRestrictions::Unrestricted));
 #endif
 
-    // Get the host device for allocating memory on the host.
-    using DevHost = alpaka::DevCpu;
-    auto const devHost = alpaka::getDevByIdx<DevHost>(0u);
-
-    using BufHost = alpaka::Buf<DevHost, Data, Dim, Idx>;
     BufHost bufHostX(alpaka::allocBuf<Data, Idx>(devHost, extent));
     BufHost bufHostY(alpaka::allocBuf<Data, Idx>(devHost, extent));
     BufHost bufHostZ(alpaka::allocBuf<Data, Idx>(devHost, extent));
@@ -329,7 +345,7 @@ auto main() -> int
     std::default_random_engine eng{rd()};
     std::uniform_real_distribution<Data> dist(-1, 1);
 
-    for(Idx i(0); i < numRayEle; ++i)
+    for(Idx i(0); i < nrays; ++i)
     {
         pBufHostX[i] = dist(eng);
         pBufHostY[i] = dist(eng);
@@ -340,7 +356,6 @@ auto main() -> int
         pBufHostD2[i] = 1.f;
     }
 
-    using BufAcc = alpaka::Buf<Acc, Data, Dim, Idx>;
     BufAcc bufAccX(alpaka::allocBuf<Data, Idx>(devAcc, extent));
     BufAcc bufAccY(alpaka::allocBuf<Data, Idx>(devAcc, extent));
     BufAcc bufAccZ(alpaka::allocBuf<Data, Idx>(devAcc, extent));
@@ -348,6 +363,9 @@ auto main() -> int
     BufAcc bufAccD0(alpaka::allocBuf<Data, Idx>(devAcc, extent));
     BufAcc bufAccD1(alpaka::allocBuf<Data, Idx>(devAcc, extent));
     BufAcc bufAccD2(alpaka::allocBuf<Data, Idx>(devAcc, extent));
+
+    // Define our queue.
+    QueueAcc queue(devAcc);
 
     // Copy Host -> Acc
     alpaka::memcpy(queue, bufAccX, bufHostX);
@@ -373,11 +391,10 @@ auto main() -> int
     float SZ = 10.f;
 
     // Calculate on the CPU, only needs to be done once. Such awful code though.
-    Idx const Rele(9);
-    alpaka::Vec<Dim, Idx> const extent2(Rele);
-    BufHost bufHostR(alpaka::allocBuf<Data, Idx>(devHost, extent2));
+    alpaka::Vec<Dim, Idx> R_dim = 9u;
+    BufHost bufHostR(alpaka::allocBuf<Data, Idx>(devHost, R_dim));
     Data* pBufHostR(alpaka::getPtrNative(bufHostR));
-    BufAcc bufAccR(alpaka::allocBuf<Data, Idx>(devAcc, extent2));
+    BufAcc bufAccR(alpaka::allocBuf<Data, Idx>(devAcc, R_dim));
 
     pBufHostR[0] = std::cos(alpha)*std::cos(gamma)+std::sin(alpha)*std::sin(beta)*std::sin(gamma);
     pBufHostR[1] = -std::cos(beta)*std::sin(gamma);
@@ -412,18 +429,25 @@ auto main() -> int
         SurfaceN,
         RayN,
         intertype,
-        numRayEle);
-
-    // Change eventually
-    if (intertype == 2) {
-        RayN = SurfaceN;
-    }
+        nrays);
 
     const auto beginT = std::chrono::high_resolution_clock::now();
 
     alpaka::enqueue(queue, traceKernelTask);
+    alpaka::wait(queue);
+
+    // Change eventually.
+    if (intertype == 2) {
+        RayN = SurfaceN;
+    }
 
     const auto endT = std::chrono::high_resolution_clock::now();
+
+    // Copy back the results.
+    alpaka::memcpy(queue, bufHostX, bufAccX);
+    alpaka::memcpy(queue, bufHostY, bufAccY);
+    alpaka::memcpy(queue, bufHostZ, bufAccZ);
+    alpaka::wait(queue);
 
     std::cout << "Time for kernel execution: " << std::chrono::duration<double>(endT - beginT).count() << 's' << std::endl;
     std::cout << "Number of rays: " << nrays << std::endl;

@@ -25,3 +25,11 @@ using QueueProperty = alpaka::Blocking;
 using QueueAcc = alpaka::Queue<Acc, QueueProperty>;
 auto const devAcc = alpaka::getDevByIdx<Acc>(0u);
 Idx const elementsPerThread = 1u;
+
+// Get the host device for allocating memory on the host.
+using DevHost = alpaka::DevCpu;
+using BufHost = alpaka::Buf<DevHost, Data, Dim, Idx>;
+auto const devHost = alpaka::getDevByIdx<DevHost>(0u);
+
+// Define the accelerator buffer.
+using BufAcc = alpaka::Buf<Acc, Data, Dim, Idx>;
