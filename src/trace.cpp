@@ -81,6 +81,13 @@ int main()
     alpaka::Vec<Dim, Idx> const extent(nrays);
 
 #ifdef ALPAKA_ACC_GPU_CUDA_ENABLED
+    Idx const elementsPerThread = 1u;
+#else
+    // This parameter doesn't affect timing very much.
+    Idx const elementsPerThread = nrays / 10u;
+#endif
+
+#ifdef ALPAKA_ACC_GPU_CUDA_ENABLED
     Idx const blocksPerGrid = 5;
     Idx const threadsPerBlock = 512;
     auto workDiv = alpaka::WorkDivMembers<Dim, Idx>{blocksPerGrid, threadsPerBlock, elementsPerThread};
@@ -155,7 +162,7 @@ int main()
     float Skappa = 0.f;
     float Sc = 0.05f;
     float SDiam = 10.f;
-    float SurfaceN = 1.5f;
+    float SurfaceN = 1.f;
     int intertype = 1u;
     float alpha = 0.f;
     float beta = M_PI;

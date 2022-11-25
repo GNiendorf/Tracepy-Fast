@@ -34,8 +34,8 @@ ALPAKA_FN_ACC ALPAKA_FN_INLINE void findIntersection(
 {
     // Initial guesses. See Spencer, Murty for explanation.
     float s_0 = -Z[rayidx] / D2[rayidx];
-    float X_1 = X[rayidx] + D1[rayidx] * s_0;
-    float Y_1 = Y[rayidx] + D2[rayidx] * s_0;
+    float X_1 = X[rayidx] + D0[rayidx] * s_0;
+    float Y_1 = Y[rayidx] + D1[rayidx] * s_0;
     float s_j[2] = {0.f, 0.f};
 
     //Initial error and iterator.
@@ -175,7 +175,7 @@ ALPAKA_FN_ACC ALPAKA_FN_INLINE void interact(
     // The first condition is needed for total internal reflection.
     else if (b > a * a || intertype == 1)
     {
-        reflection(D0, D1, D2, normal, a, rayidx);
+        reflection(D0, D1, D2, normal, a/mu, rayidx);
     }
     else if (intertype == 2)
     {

@@ -12,9 +12,13 @@ using Idx = std::size_t;
 // - AccCpuFibers
 // - AccCpuSerial
 #ifdef ALPAKA_ACC_GPU_CUDA_ENABLED
-using Acc = alpaka::AccGpuCudaRt<Dim, Idx>;
+    using Acc = alpaka::AccGpuCudaRt<Dim, Idx>;
+#elif ALPAKA_ACC_CPU_B_SEQ_T_THREADS_ENABLED
+    using Acc = alpaka::AccCpuThreads<Dim, Idx>;
+#elif ALPAKA_ACC_CPU_B_SEQ_T_FIBERS_ENABLED
+    using Acc = alpaka::AccCpuFibers<Dim, Idx>;
 #else
-using Acc = alpaka::AccCpuSerial<Dim, Idx>;
+    using Acc = alpaka::AccCpuSerial<Dim, Idx>;
 #endif
 
 // Non blocking significantly increases timing, .000037 -> 0.00013 s

@@ -14,10 +14,4 @@
 auto const devHost = alpaka::getDevByIdx<DevHost>(0u);
 auto const devAcc = alpaka::getDevByIdx<Acc>(0u);
 
-#ifdef ALPAKA_ACC_GPU_CUDA_ENABLED
-    Idx const elementsPerThread = 1u;
-#else
-    Idx const elementsPerThread = 20000u;
-#endif
-
 #endif
