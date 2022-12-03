@@ -26,50 +26,42 @@ public:
         TIdx const& nRays) const
     {
 
-        TIdx const gridThreadIdx(alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0u]);
-        TIdx const threadElemExtent(alpaka::getWorkDiv<alpaka::Thread, alpaka::Elems>(acc)[0u]);
-        TIdx const threadFirstElemIdx(gridThreadIdx * threadElemExtent);
+        TIdx const globalThreadIdx(alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0u]);
+        TIdx const gridThreadExtent(alpaka::getWorkDiv<alpaka::Grid, alpaka::Threads>(acc)[0u]);
 
-        if(threadFirstElemIdx < nRays)
+        for(TIdx i = globalThreadIdx; i < nRays; i += gridThreadExtent)
         {
-
-            TIdx const threadLastElemIdx(threadFirstElemIdx + threadElemExtent);
-            TIdx const threadLastElemIdxClipped((nRays > threadLastElemIdx) ? threadLastElemIdx : nRays);
-
-            for(TIdx i(threadFirstElemIdx); i < threadLastElemIdxClipped; ++i)
+            // Don't waste time tracing rays that failed previously.
+            if (X[i] == -9999.f)
             {
-                // Don't waste time tracing rays that failed previously.
-                if (X[i] == -9999.f)
-                {
-                    //printf("Ignoring previous ray that failed!");
-                    continue;
-                }
-
-                // Transform coordinate system to surface coordinate system.
-                transform(R, X, Y, Z, D0, D1, D2, SX, SY, SZ, i);
-
-                // Find intersection coordinates between ray and surface.
-                float rho, func, E, deriv; float normal[3];
-                findIntersection(acc, X, Y, Z, D0, D1, D2, Skappa, Sc, SDiam, rho, func, E, deriv, normal, i);
-
-                if (X[i] == -9999.f)
-                {
-                    //printf("Failure to find intersection!");
-                    continue;
-                }
-
-                // Find new ray directions from interaction with surface
-                interact(acc, X, D0, D1, D2, rayN, surfaceN, intertype, deriv, normal, i);
-
-                if (X[i] == -9999.f)
-                {
-                    //printf("Failure with interaction!");
-                    continue;
-                }
-
-                // Transform coordinate system back to the lab frame.
-                labFrame(R, X, Y, Z, D0, D1, D2, SX, SY, SZ, i);
+                //printf("Ignoring previous ray that failed!");
+                continue;
             }
+
+            // Transform coordinate system to surface coordinate system.
+            transform(R, X, Y, Z, D0, D1, D2, SX, SY, SZ, i);
+
+            // Find intersection coordinates between ray and surface.
+            float rho, func, E, deriv; float normal[3];
+            findIntersection(acc, X, Y, Z, D0, D1, D2, Skappa, Sc, SDiam, rho, func, E, deriv, normal, i);
+
+            if (X[i] == -9999.f)
+            {
+                //printf("Failure to find intersection!");
+                continue;
+            }
+
+            // Find new ray directions from interaction with surface
+            interact(acc, X, D0, D1, D2, rayN, surfaceN, intertype, deriv, normal, i);
+
+            if (X[i] == -9999.f)
+            {
+                //printf("Failure with interaction!");
+                continue;
+            }
+
+            // Transform coordinate system back to the lab frame.
+            labFrame(R, X, Y, Z, D0, D1, D2, SX, SY, SZ, i);
         }
     }
 };
@@ -77,7 +69,7 @@ public:
 int main()
 {
 
-    const int nrays = 100000u;
+    const int nrays = 1000000u;
     alpaka::Vec<Dim, Idx> const extent(nrays);
 
 #ifdef ALPAKA_ACC_GPU_CUDA_ENABLED
@@ -162,8 +154,8 @@ int main()
     float Skappa = 0.f;
     float Sc = 0.05f;
     float SDiam = 10.f;
-    float SurfaceN = 1.f;
-    int intertype = 1u;
+    float SurfaceN = .1f;
+    int intertype = 2u;
     float alpha = 0.f;
     float beta = M_PI;
     float gamma = 0.f;
@@ -204,22 +196,22 @@ int main()
         intertype,
         nrays);
 
-    const auto beginT = std::chrono::high_resolution_clock::now();
 
     alpaka::enqueue(queue, traceKernelTask);
     alpaka::wait(queue);
 
     // This only needs to be done once per surface.
+    // How to deal with internal reflection?
+    // Fix : Put this in the kernel code.
     if (intertype == 2)
         RayN = SurfaceN;
-
-    const auto endT = std::chrono::high_resolution_clock::now();
-
+    const auto beginT = std::chrono::high_resolution_clock::now();
     // Copy back the results.
     alpaka::memcpy(queue, bufHostX, bufAccX);
     alpaka::memcpy(queue, bufHostY, bufAccY);
     alpaka::memcpy(queue, bufHostZ, bufAccZ);
     alpaka::wait(queue);
+    const auto endT = std::chrono::high_resolution_clock::now();
 
     std::cout << "Time for kernel execution: " << std::chrono::duration<double>(endT - beginT).count() << 's' << std::endl;
     std::cout << "Number of rays: " << nrays << std::endl;
