@@ -26,10 +26,24 @@ public:
         TIdx const& nRays) const
     {
 
+#ifdef ALPAKA_ACC_GPU_CUDA_ENABLED
         TIdx const globalThreadIdx(alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0u]);
         TIdx const gridThreadExtent(alpaka::getWorkDiv<alpaka::Grid, alpaka::Threads>(acc)[0u]);
 
         for(TIdx i = globalThreadIdx; i < nRays; i += gridThreadExtent)
+#else
+        TIdx const gridThreadIdx(alpaka::getIdx<alpaka::Grid, alpaka::Threads>(acc)[0u]);
+        TIdx const threadElemExtent(alpaka::getWorkDiv<alpaka::Thread, alpaka::Elems>(acc)[0u]);
+        TIdx const threadFirstElemIdx(gridThreadIdx * threadElemExtent);
+
+        if(threadFirstElemIdx < nRays)
+        {
+
+        TIdx const threadLastElemIdx(threadFirstElemIdx + threadElemExtent);
+        TIdx const threadLastElemIdxClipped((nRays > threadLastElemIdx) ? threadLastElemIdx : nRays);
+
+        for(TIdx i(threadFirstElemIdx); i < threadLastElemIdxClipped; ++i)
+#endif
         {
             // Don't waste time tracing rays that failed previously.
             if (X[i] == -9999.f)
@@ -63,6 +77,9 @@ public:
             // Transform coordinate system back to the lab frame.
             labFrame(R, X, Y, Z, D0, D1, D2, SX, SY, SZ, i);
         }
+#if !defined ALPAKA_ACC_GPU_CUDA_ENABLED
+        }
+#endif
     }
 };
 
@@ -80,8 +97,8 @@ int main()
 #endif
 
 #ifdef ALPAKA_ACC_GPU_CUDA_ENABLED
-    Idx const blocksPerGrid = 5;
-    Idx const threadsPerBlock = 512;
+    Idx const blocksPerGrid = 1000;
+    Idx const threadsPerBlock = 128;
     auto workDiv = alpaka::WorkDivMembers<Dim, Idx>{blocksPerGrid, threadsPerBlock, elementsPerThread};
 #else
     // Let alpaka calculate good block and grid sizes given our full problem extent
@@ -155,7 +172,7 @@ int main()
     float Sc = 0.05f;
     float SDiam = 10.f;
     float SurfaceN = .1f;
-    int intertype = 2u;
+    int intertype = 1u;
     float alpha = 0.f;
     float beta = M_PI;
     float gamma = 0.f;
@@ -196,7 +213,7 @@ int main()
         intertype,
         nrays);
 
-
+    const auto beginT = std::chrono::high_resolution_clock::now();
     alpaka::enqueue(queue, traceKernelTask);
     alpaka::wait(queue);
 
@@ -205,7 +222,7 @@ int main()
     // Fix : Put this in the kernel code.
     if (intertype == 2)
         RayN = SurfaceN;
-    const auto beginT = std::chrono::high_resolution_clock::now();
+
     // Copy back the results.
     alpaka::memcpy(queue, bufHostX, bufAccX);
     alpaka::memcpy(queue, bufHostY, bufAccY);
